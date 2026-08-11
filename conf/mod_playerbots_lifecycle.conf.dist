@@ -1,0 +1,15 @@
+[worldserver]
+
+# Starts one guarded random bot account cleanup pass.
+# The default leaves cleanup disabled.
+PlayerbotsLifecycle.CleanupRequested = 0
+
+# Confirmation digest for random bot deletion. Leave this empty for the first run.
+# The server prints the complete account and character cohort with its digest, then stops without deleting anything.
+# Copy that digest here and restart only after inspecting the cohort. A changed cohort invalidates the digest.
+PlayerbotsLifecycle.CleanupConfirmation = ""
+
+# Character names that must never be deleted, separated by commas.
+# The cleanup refuses an empty list. Every configured name must resolve to exactly one existing character outside
+# the deletion cohort.
+PlayerbotsLifecycle.ProtectedCharacters = ""
