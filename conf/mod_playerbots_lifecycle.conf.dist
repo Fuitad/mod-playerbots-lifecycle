@@ -9,7 +9,9 @@ PlayerbotsLifecycle.CleanupRequested = 0
 # Copy that digest here and restart only after inspecting the cohort. A changed cohort invalidates the digest.
 PlayerbotsLifecycle.CleanupConfirmation = ""
 
-# Character names that must never be deleted, separated by commas.
-# The cleanup refuses an empty list. Every configured name must resolve to exactly one existing character outside
-# the deletion cohort.
-PlayerbotsLifecycle.ProtectedCharacters = ""
+# Account ids whose characters must never be deleted, separated by commas.
+# The cleanup refuses an empty list. Every configured id must match an existing account, and no character
+# owned by such an account may fall inside the deletion cohort.
+# Protection is account scoped on purpose: every character the account owns is covered, including ones
+# created after this was configured, so a new alt is guarded without editing this file.
+PlayerbotsLifecycle.ProtectedAccounts = ""

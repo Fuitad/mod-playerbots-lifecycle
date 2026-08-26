@@ -71,21 +71,26 @@ RandomPlayerbotCleanupRequest GatherCleanupRequest()
         request.candidates.push_back(candidate);
     }
 
-    for (std::string const& configuredName : sPlayerbotLifecycleConfig.protectedCharacters)
+    request.protectedAccountsMalformed = sPlayerbotLifecycleConfig.protectedAccountsMalformed;
+    for (uint32 const accountId : sPlayerbotLifecycleConfig.protectedAccounts)
     {
-        RandomPlayerbotProtectedCharacter protectedCharacter;
-        protectedCharacter.configuredName = configuredName;
+        RandomPlayerbotProtectedAccount protectedAccount;
+        protectedAccount.accountId = accountId;
 
-        std::string escapedName = configuredName;
-        CharacterDatabase.EscapeString(escapedName);
-        if (QueryResult found = CharacterDatabase.Query("SELECT guid FROM characters WHERE name = '{}'", escapedName))
+        // Existence is asked of the auth database, not inferred from owning characters, so a real
+        // account with no characters stays distinguishable from an id that matches nothing.
+        std::string accountName;
+        protectedAccount.exists = AccountMgr::GetName(accountId, accountName);
+
+        // Every character on the account, so one created after this was configured is guarded too.
+        if (QueryResult owned = CharacterDatabase.Query("SELECT guid FROM characters WHERE account = {}", accountId))
         {
             do
             {
-                protectedCharacter.resolvedGuids.push_back(found->Fetch()[0].Get<uint32>());
-            } while (found->NextRow());
+                protectedAccount.characterGuids.push_back(owned->Fetch()[0].Get<uint32>());
+            } while (owned->NextRow());
         }
-        request.protectedCharacters.push_back(std::move(protectedCharacter));
+        request.protectedAccounts.push_back(std::move(protectedAccount));
     }
     return request;
 }
@@ -107,16 +112,20 @@ void LogCleanupPlan(RandomPlayerbotCleanupPlan const& plan, RandomPlayerbotClean
         }
     }
 
-    for (RandomPlayerbotProtectedCharacter const& protectedCharacter : request.protectedCharacters)
+    for (RandomPlayerbotProtectedAccount const& protectedAccount : request.protectedAccounts)
     {
-        if (protectedCharacter.resolvedGuids.empty())
+        if (!protectedAccount.exists)
         {
-            LOG_INFO("playerbots.lifecycle", "  protected name={} resolved=<none>", protectedCharacter.configuredName);
+            LOG_INFO("playerbots.lifecycle", "  protected account={} exists=false", protectedAccount.accountId);
             continue;
         }
-        for (uint32 guid : protectedCharacter.resolvedGuids)
-            LOG_INFO("playerbots.lifecycle", "  protected name={} resolved={}", protectedCharacter.configuredName,
-                     guid);
+        if (protectedAccount.characterGuids.empty())
+        {
+            LOG_INFO("playerbots.lifecycle", "  protected account={} characters=<none>", protectedAccount.accountId);
+            continue;
+        }
+        for (uint32 guid : protectedAccount.characterGuids)
+            LOG_INFO("playerbots.lifecycle", "  protected account={} character={}", protectedAccount.accountId, guid);
     }
 
     LOG_INFO("playerbots.lifecycle", "Confirmation digest: {}", plan.confirmationDigest);

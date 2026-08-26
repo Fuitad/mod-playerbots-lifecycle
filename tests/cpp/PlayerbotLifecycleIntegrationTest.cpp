@@ -26,7 +26,7 @@ RandomPlayerbotCleanupRequest CleanRequest()
     request.generatedAccountCount = 3;
     request.candidates = {BotAccount(10, "RNDBOT0", {101, 102}), BotAccount(11, "RNDBOT1", {103}),
                           BotAccount(12, "RNDBOT2", {104, 105})};
-    request.protectedCharacters = {{"Keeper", {900}}};
+    request.protectedAccounts = {{900, true, {9000}}};
     return request;
 }
 }  // namespace
@@ -45,20 +45,77 @@ TEST(PlayerbotLifecycleCleanupTest, ConfirmationUnlocksOnlyTheExactInspectedCoho
     EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal, RandomPlayerbotCleanupRefusal::ConfirmationMismatch);
 }
 
-TEST(PlayerbotLifecycleCleanupTest, ProtectedCharactersFailClosed)
+TEST(PlayerbotLifecycleCleanupTest, ProtectedAccountsFailClosed)
 {
     RandomPlayerbotCleanupRequest request = CleanRequest();
-    request.protectedCharacters = {{"Keeper", {103}}};
-    EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal,
-              RandomPlayerbotCleanupRefusal::ProtectedCharacterTargeted);
 
-    request.protectedCharacters = {{"Misspelled", {}}};
+    // An account owning ANY character in the cohort is refused, not just one that was named.
+    request.protectedAccounts = {{900, true, {103}}};
     EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal,
-              RandomPlayerbotCleanupRefusal::ProtectedCharacterUnresolved);
+              RandomPlayerbotCleanupRefusal::ProtectedAccountTargeted);
 
-    request.protectedCharacters = {{"Duplicate", {900, 901}}};
+    // Guarding still fires on a second character of the same account, which is the whole point of
+    // scoping protection to the account: a character added later is covered without a config edit.
+    request.protectedAccounts = {{900, true, {9000, 104}}};
     EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal,
-              RandomPlayerbotCleanupRefusal::ProtectedCharacterAmbiguous);
+              RandomPlayerbotCleanupRefusal::ProtectedAccountTargeted);
+
+    // A mistyped id matches no account and fails closed.
+    request.protectedAccounts = {{4242, false, {}}};
+    EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal,
+              RandomPlayerbotCleanupRefusal::ProtectedAccountUnresolved);
+
+    // A real account that simply owns no character, and is NOT in the cohort, guards nothing and is
+    // not an error.
+    request.protectedAccounts = {{900, true, {}}};
+    EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal, RandomPlayerbotCleanupRefusal::ConfirmationMissing);
+
+    /*
+     * The same empty list, but the protected account IS a target. The character query returned
+     * nothing, which the database layer reports identically for an empty account and for a failed
+     * query, so the guid intersection sees nothing to refuse. The account id must refuse it anyway,
+     * or a confirmed run deletes account 10 and every character it owns.
+     */
+    request.protectedAccounts = {{10, true, {}}};
+    EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal,
+              RandomPlayerbotCleanupRefusal::ProtectedAccountTargeted);
+    request.suppliedConfirmation = RandomPlayerbotBuildCleanupPlan(request).confirmationDigest;
+    EXPECT_FALSE(RandomPlayerbotBuildCleanupPlan(request).MayMutate());
+
+    // Configuring nothing at all is refused.
+    request.protectedAccounts.clear();
+    EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal,
+              RandomPlayerbotCleanupRefusal::ProtectedAccountsUnconfigured);
+}
+
+TEST(PlayerbotLifecycleCleanupTest, MalformedProtectedAccountListRefusesEvenWithAValidEntry)
+{
+    RandomPlayerbotCleanupRequest request = CleanRequest();
+
+    // The dangerous shape: one good id keeps the list nonempty, so neither Unconfigured nor
+    // Unresolved fires, and the bad token vanishes without trace.
+    request.protectedAccountsMalformed = true;
+    EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal,
+              RandomPlayerbotCleanupRefusal::ProtectedAccountsMalformed);
+
+    // A digest taken while malformed must not authorise a later clean run, and vice versa.
+    std::string const malformedDigest = RandomPlayerbotBuildCleanupPlan(request).confirmationDigest;
+    request.protectedAccountsMalformed = false;
+    EXPECT_NE(RandomPlayerbotBuildCleanupPlan(request).confirmationDigest, malformedDigest);
+}
+
+TEST(PlayerbotLifecycleCleanupTest, ProtectionDigestIsSelfDelimiting)
+{
+    RandomPlayerbotCleanupRequest one = CleanRequest();
+    one.protectedAccounts = {{1, true, {2, 3}}};
+
+    // Same numbers, different record boundaries. Without mixed counts both sets serialise to an
+    // identical byte stream, so the digest cannot tell them apart.
+    RandomPlayerbotCleanupRequest many = CleanRequest();
+    many.protectedAccounts = {{1, true, {}}, {2, true, {}}, {3, true, {}}};
+
+    EXPECT_NE(RandomPlayerbotBuildCleanupPlan(one).confirmationDigest,
+              RandomPlayerbotBuildCleanupPlan(many).confirmationDigest);
 }
 
 TEST(PlayerbotLifecycleCleanupTest, AccountNameAndOwnershipMustAgree)

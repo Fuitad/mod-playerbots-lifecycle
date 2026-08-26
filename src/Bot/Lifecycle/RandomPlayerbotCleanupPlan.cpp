@@ -110,14 +110,14 @@ char const* RandomPlayerbotCleanupRefusalName(RandomPlayerbotCleanupRefusal refu
             return "none";
         case RandomPlayerbotCleanupRefusal::AccountNameOwnershipMismatch:
             return "account_name_ownership_mismatch";
-        case RandomPlayerbotCleanupRefusal::ProtectedCharactersUnconfigured:
-            return "protected_characters_unconfigured";
-        case RandomPlayerbotCleanupRefusal::ProtectedCharacterUnresolved:
-            return "protected_character_unresolved";
-        case RandomPlayerbotCleanupRefusal::ProtectedCharacterAmbiguous:
-            return "protected_character_ambiguous";
-        case RandomPlayerbotCleanupRefusal::ProtectedCharacterTargeted:
-            return "protected_character_targeted";
+        case RandomPlayerbotCleanupRefusal::ProtectedAccountsUnconfigured:
+            return "protected_accounts_unconfigured";
+        case RandomPlayerbotCleanupRefusal::ProtectedAccountsMalformed:
+            return "protected_accounts_malformed";
+        case RandomPlayerbotCleanupRefusal::ProtectedAccountUnresolved:
+            return "protected_account_unresolved";
+        case RandomPlayerbotCleanupRefusal::ProtectedAccountTargeted:
+            return "protected_account_targeted";
         case RandomPlayerbotCleanupRefusal::ConfirmationMissing:
             return "confirmation_missing";
         case RandomPlayerbotCleanupRefusal::ConfirmationMismatch:
@@ -200,14 +200,24 @@ RandomPlayerbotCleanupPlan RandomPlayerbotBuildCleanupPlan(RandomPlayerbotCleanu
     // Protection is part of what the operator approves too. A changed name resolution must make an
     // older digest unusable even when the deletion cohort itself happened to stay the same.
     digest.Mix(static_cast<uint8>(0xFEu));
-    std::vector<RandomPlayerbotProtectedCharacter> protectedCharacters = request.protectedCharacters;
-    std::sort(protectedCharacters.begin(), protectedCharacters.end(),
-              [](auto const& left, auto const& right) { return left.configuredName < right.configuredName; });
-    for (RandomPlayerbotProtectedCharacter& protectedCharacter : protectedCharacters)
+    std::vector<RandomPlayerbotProtectedAccount> protectedAccounts = request.protectedAccounts;
+    std::sort(protectedAccounts.begin(), protectedAccounts.end(),
+              [](auto const& left, auto const& right) { return left.accountId < right.accountId; });
+    /*
+     * Counts are mixed so the encoding is self delimiting. Without them the stream is a flat run of
+     * numbers and record boundaries are ambiguous: one account owning five characters serialises to
+     * the same bytes as five character-less accounts whose ids happen to equal those values. That is
+     * not a hash collision, it is the same input, so no strength of hash would separate them.
+     */
+    digest.Mix(static_cast<uint32>(protectedAccounts.size()));
+    digest.Mix(static_cast<uint8>(request.protectedAccountsMalformed ? 1u : 0u));
+    for (RandomPlayerbotProtectedAccount& protectedAccount : protectedAccounts)
     {
-        SortAndDeduplicate(protectedCharacter.resolvedGuids);
-        digest.Mix(protectedCharacter.configuredName);
-        for (uint32 const guid : protectedCharacter.resolvedGuids)
+        SortAndDeduplicate(protectedAccount.characterGuids);
+        digest.Mix(protectedAccount.accountId);
+        digest.Mix(static_cast<uint8>(protectedAccount.exists ? 1u : 0u));
+        digest.Mix(static_cast<uint32>(protectedAccount.characterGuids.size()));
+        for (uint32 const guid : protectedAccount.characterGuids)
             digest.Mix(guid);
     }
 
@@ -222,38 +232,63 @@ RandomPlayerbotCleanupPlan RandomPlayerbotBuildCleanupPlan(RandomPlayerbotCleanu
     }
 
     /*
-     * Checked before the per character rules, because an empty list makes all of them vacuous: every
+     * Checked before the per account rules, because an empty list makes all of them vacuous: every
      * loop below passes trivially and the pass would proceed with nothing guarded. The shipped
      * default is empty, so this is the state a fresh install is in, and an operator who supplied the
-     * confirmation digest without ever configuring a protected name has authorised a delete they did
-     * not think through. Refusing here is what keeps the empty default safe without writing one
-     * server's character name into a configuration template every install receives.
+     * confirmation digest without ever configuring a protected account has authorised a delete they
+     * did not think through. Refusing here is what keeps the empty default safe without writing one
+     * server's account id into a configuration template every install receives.
      */
-    if (request.protectedCharacters.empty())
+    // Checked before the empty test: a list of nothing but bad tokens parses to empty, and naming
+    // the parse failure is more use to the operator than reporting it as never configured.
+    if (request.protectedAccountsMalformed)
     {
-        plan.refusal = RandomPlayerbotCleanupRefusal::ProtectedCharactersUnconfigured;
+        plan.refusal = RandomPlayerbotCleanupRefusal::ProtectedAccountsMalformed;
         return plan;
     }
 
-    for (auto const& protectedCharacter : request.protectedCharacters)
+    if (request.protectedAccounts.empty())
     {
-        if (protectedCharacter.resolvedGuids.empty())
+        plan.refusal = RandomPlayerbotCleanupRefusal::ProtectedAccountsUnconfigured;
+        return plan;
+    }
+
+    for (auto const& protectedAccount : request.protectedAccounts)
+    {
+        // A mistyped id matches no account. An account that exists but owns no character is
+        // legitimate and guards nothing, so it is not by itself a refusal.
+        if (!protectedAccount.exists)
         {
-            plan.refusal = RandomPlayerbotCleanupRefusal::ProtectedCharacterUnresolved;
+            plan.refusal = RandomPlayerbotCleanupRefusal::ProtectedAccountUnresolved;
             return plan;
         }
 
-        if (protectedCharacter.resolvedGuids.size() > 1)
+        /*
+         * The account id is the authority, checked before any character list.
+         *
+         * Testing only the characters would trust a second snapshot taken by a separate query, and
+         * the database layer returns nothing both for "this account owns no characters" and for
+         * "that query failed". A protected account inside the deletion cohort would then pass on an
+         * empty list. It would not merely lose the captured guids either: account deletion re-reads
+         * the account's characters at deletion time, so it would take characters that were never in
+         * the snapshot this plan approved.
+         */
+        if (std::binary_search(plan.accountIds.begin(), plan.accountIds.end(), protectedAccount.accountId))
         {
-            plan.refusal = RandomPlayerbotCleanupRefusal::ProtectedCharacterAmbiguous;
+            plan.refusal = RandomPlayerbotCleanupRefusal::ProtectedAccountTargeted;
             return plan;
         }
 
-        if (std::binary_search(plan.characterGuids.begin(), plan.characterGuids.end(),
-                               protectedCharacter.resolvedGuids.front()))
+        // Kept as a second line of defence. If a protected account's character ever appears in the
+        // cohort without that account being targeted, the bookkeeping is wrong and nothing should
+        // be deleted on it.
+        for (uint32 const guid : protectedAccount.characterGuids)
         {
-            plan.refusal = RandomPlayerbotCleanupRefusal::ProtectedCharacterTargeted;
-            return plan;
+            if (std::binary_search(plan.characterGuids.begin(), plan.characterGuids.end(), guid))
+            {
+                plan.refusal = RandomPlayerbotCleanupRefusal::ProtectedAccountTargeted;
+                return plan;
+            }
         }
     }
 

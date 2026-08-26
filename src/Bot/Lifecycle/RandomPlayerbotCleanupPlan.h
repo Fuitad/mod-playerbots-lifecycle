@@ -43,29 +43,35 @@ enum class RandomPlayerbotCleanupRefusal : uint8
     AccountNameOwnershipMismatch,
 
     /*
-     * No protected character is configured at all.
+     * No protected account is configured at all.
      *
      * An empty list is not a statement that nothing needs protecting; it is the shipped default,
      * which means the operator has not yet said anything on the subject. Supplying a confirmation
      * digest while leaving it empty would otherwise authorise a bulk delete with nothing guarded,
-     * and the one character that most needs guarding is the operator's own.
+     * and the account that most needs guarding is the operator's own.
      *
-     * The alternative, shipping a real character name as the default, was rejected: that name
-     * belongs to one server and would be wrong in every other install of this module.
+     * The alternative, shipping a real account id as the default, was rejected: that id belongs to
+     * one server and would be wrong in every other install of this module.
      */
-    ProtectedCharactersUnconfigured,
+    ProtectedAccountsUnconfigured,
 
-    // A configured protected character name matched no character. Fails closed rather than assuming
-    // the name was stale, because the alternative is deleting the character it was meant to protect.
-    ProtectedCharacterUnresolved,
+    /*
+     * The configured list contained a token that is not a valid nonzero account id.
+     *
+     * Dropping bad tokens silently is only safe when every token is bad, because one surviving
+     * valid id keeps the list nonempty and no other refusal fires. The operator would then get a
+     * digest authorising a guard set smaller than the one they wrote, and the account they meant to
+     * protect with the mistyped entry is unguarded.
+     */
+    ProtectedAccountsMalformed,
 
-    // A configured protected character name matched more than one character, so which one was meant
-    // cannot be known.
-    ProtectedCharacterAmbiguous,
+    // A configured protected account id matched no account. Fails closed rather than assuming the
+    // id was stale, because the alternative is deleting the characters it was meant to protect.
+    ProtectedAccountUnresolved,
 
-    // A protected character is inside the computed cohort. This is the guard that keeps a real
-    // player's character out of a bot sweep.
-    ProtectedCharacterTargeted,
+    // A protected account owns a character inside the computed cohort. This is the guard that keeps
+    // a real player's characters out of a bot sweep.
+    ProtectedAccountTargeted,
 
     // No confirmation was supplied. The complete target is still computed so it can be previewed;
     // nothing is deleted.
@@ -100,16 +106,22 @@ struct RandomPlayerbotCandidateAccount
 };
 
 /*
- * One configured protected character name and everything it resolved to.
+ * One configured protected account and every character it owns.
  *
- * The resolution is carried in rather than performed here so that "no such character" and "more
- * than one character" stay distinguishable. Collapsing them to a single GUID, or to zero, is what
- * would turn a typo into a silent deletion.
+ * Protection is account scoped rather than character scoped on purpose. A name list guards only the
+ * characters someone remembered to write down, so a character created later on the same account is
+ * unguarded until the configuration is edited again. An account id covers every character it owns,
+ * including ones that do not exist yet, which is the property that makes the guard hold over time.
+ *
+ * `exists` is carried separately from the character list because an account with no characters is
+ * legitimate, while an id that matches no account at all is a typo. Collapsing the two would turn
+ * a mistyped id into a silently unguarded run.
  */
-struct RandomPlayerbotProtectedCharacter
+struct RandomPlayerbotProtectedAccount
 {
-    std::string configuredName;
-    std::vector<uint32> resolvedGuids;
+    uint32 accountId = 0;
+    bool exists = false;
+    std::vector<uint32> characterGuids;
 };
 
 struct RandomPlayerbotCleanupRequest
@@ -121,7 +133,11 @@ struct RandomPlayerbotCleanupRequest
     uint32 generatedAccountCount = 0;
 
     std::vector<RandomPlayerbotCandidateAccount> candidates;
-    std::vector<RandomPlayerbotProtectedCharacter> protectedCharacters;
+    std::vector<RandomPlayerbotProtectedAccount> protectedAccounts;
+
+    // Whether the configured account list contained an unparseable token. Carried separately from
+    // the ids because a dropped token leaves no record of itself among them.
+    bool protectedAccountsMalformed = false;
 
     // The operator supplied confirmation digest. Empty means preview only.
     std::string suppliedConfirmation;
