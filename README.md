@@ -18,6 +18,9 @@ and protected account settings belong to this module and are documented in
 * An account is selected only when its generated name and its random bot ownership row agree.
 * An empty protected account list refuses the cleanup.
 * Every protected account id must match an existing account.
+* A protected account that owns no character refuses the cleanup. It guards nothing, and the database
+  layer reports an empty account and a failed character query identically, so neither reading is
+  allowed to pass as a valid guard.
 * No character owned by a protected account may fall inside the selected cohort. Protection is
   account scoped, so characters created after the list was written are covered too.
 * A digest authorizes only the exact cohort shown in the preview.

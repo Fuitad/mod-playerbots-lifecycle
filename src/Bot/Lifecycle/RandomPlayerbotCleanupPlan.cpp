@@ -118,6 +118,8 @@ char const* RandomPlayerbotCleanupRefusalName(RandomPlayerbotCleanupRefusal refu
             return "protected_account_unresolved";
         case RandomPlayerbotCleanupRefusal::ProtectedAccountTargeted:
             return "protected_account_targeted";
+        case RandomPlayerbotCleanupRefusal::ProtectedAccountEmpty:
+            return "protected_account_empty";
         case RandomPlayerbotCleanupRefusal::ConfirmationMissing:
             return "confirmation_missing";
         case RandomPlayerbotCleanupRefusal::ConfirmationMismatch:
@@ -289,6 +291,17 @@ RandomPlayerbotCleanupPlan RandomPlayerbotBuildCleanupPlan(RandomPlayerbotCleanu
                 plan.refusal = RandomPlayerbotCleanupRefusal::ProtectedAccountTargeted;
                 return plan;
             }
+        }
+
+        /*
+         * Checked last, so an account that is both empty and inside the cohort still reports the
+         * more severe ProtectedAccountTargeted above. Reaching here means the account is not a
+         * target and owns nothing, which guards nothing and may mean its characters moved.
+         */
+        if (protectedAccount.characterGuids.empty())
+        {
+            plan.refusal = RandomPlayerbotCleanupRefusal::ProtectedAccountEmpty;
+            return plan;
         }
     }
 

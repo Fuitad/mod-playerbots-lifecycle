@@ -10,8 +10,10 @@ PlayerbotsLifecycle.CleanupRequested = 0
 PlayerbotsLifecycle.CleanupConfirmation = ""
 
 # Account ids whose characters must never be deleted, separated by commas.
-# The cleanup refuses an empty list. Every configured id must match an existing account, and no character
-# owned by such an account may fall inside the deletion cohort.
+# The cleanup refuses an empty list. Every configured id must match an existing account, must own at least
+# one character, and no character owned by such an account may fall inside the deletion cohort.
+# An account owning no character is refused: it guards nothing, and an unreadable character query looks the
+# same as an empty one.
 # Protection is account scoped on purpose: every character the account owns is covered, including ones
 # created after this was configured, so a new alt is guarded without editing this file.
 PlayerbotsLifecycle.ProtectedAccounts = ""

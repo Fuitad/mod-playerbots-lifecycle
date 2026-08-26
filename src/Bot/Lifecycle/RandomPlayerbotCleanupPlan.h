@@ -73,6 +73,21 @@ enum class RandomPlayerbotCleanupRefusal : uint8
     // a real player's characters out of a bot sweep.
     ProtectedAccountTargeted,
 
+    /*
+     * A protected account exists but owns no character.
+     *
+     * The account id alone proves the account is not a deletion target. It does not prove the
+     * characters the operator meant to protect are still on it, and an account guarding nothing is
+     * indistinguishable from one whose characters were moved elsewhere, where the sweep would then
+     * be free to delete them.
+     *
+     * The database layer also reports an empty character list and a failed character query the same
+     * way, so an unreadable protected account would otherwise pass as a well-formed guard over
+     * nothing. Both readings are answered here: an account that protects nothing does not authorise
+     * a bulk delete. Remove the id from the list to proceed deliberately.
+     */
+    ProtectedAccountEmpty,
+
     // No confirmation was supplied. The complete target is still computed so it can be previewed;
     // nothing is deleted.
     ConfirmationMissing,

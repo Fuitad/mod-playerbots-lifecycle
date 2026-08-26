@@ -65,10 +65,18 @@ TEST(PlayerbotLifecycleCleanupTest, ProtectedAccountsFailClosed)
     EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal,
               RandomPlayerbotCleanupRefusal::ProtectedAccountUnresolved);
 
-    // A real account that simply owns no character, and is NOT in the cohort, guards nothing and is
-    // not an error.
+    /*
+     * A real account, not in the cohort, that owns no character. It guards nothing, and the database
+     * layer cannot distinguish that from a character query that failed, so it is refused rather than
+     * accepted as a well-formed guard over an empty set. Remove the id to proceed deliberately.
+     */
     request.protectedAccounts = {{900, true, {}}};
-    EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal, RandomPlayerbotCleanupRefusal::ConfirmationMissing);
+    EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal, RandomPlayerbotCleanupRefusal::ProtectedAccountEmpty);
+
+    // One protected account owning nothing refuses even when another is a real guard, so a stale id
+    // cannot ride along beside a good one.
+    request.protectedAccounts = {{900, true, {9000}}, {901, true, {}}};
+    EXPECT_EQ(RandomPlayerbotBuildCleanupPlan(request).refusal, RandomPlayerbotCleanupRefusal::ProtectedAccountEmpty);
 
     /*
      * The same empty list, but the protected account IS a target. The character query returned
