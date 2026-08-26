@@ -23,7 +23,12 @@ and protected account settings belong to this module and are documented in
   allowed to pass as a valid guard.
 * No character owned by a protected account may fall inside the selected cohort. Protection is
   account scoped, so characters created after the list was written are covered too.
-* A digest authorizes only the exact cohort shown in the preview.
+* A digest authorizes only the exact cohort shown in the preview, with one known limitation: the
+  database layer reports a failed character query and an account with no characters identically, so a
+  transient query failure can produce a plan whose digest omits characters that `AccountMgr::DeleteAccount`
+  later re-reads and deletes. The plan carries no snapshot-completeness flag, so rebuilding and comparing
+  does not close it. Treat the digest as authorization for the cohort the preview printed, and audit the
+  database afterwards rather than assuming the two agreed.
 * The cohort is rebuilt immediately before any deletion.
 * Every extension preparation must succeed before any account is deleted.
 
@@ -50,13 +55,79 @@ the tree, and the Python tooling named `population_*` lives in a different modul
    `.conf` still carrying the old key leaves the new one empty, which refuses the cleanup rather than
    running it unprotected. Update the key before requesting a wipe.
 2. Set `PlayerbotsLifecycle.CleanupRequested = 1`.
-3. Restart the worldserver. The hook runs at startup from `RandomPlayerbotFactory::CreateRandomBots`,
-   builds the cohort, prints the confirmation digest, rebuilds the cohort and compares, deletes, then
-   calls `World::StopNow`. The server stopping is the expected outcome, not a failure.
-4. Set `PlayerbotsLifecycle.CleanupRequested = 0`.
+3. Run the worldserver ONCE, with its process supervisor out of the way (see the warning below). The
+   hook runs at startup from `RandomPlayerbotFactory::CreateRandomBots`, builds the cohort, prints the
+   confirmation digest, rebuilds the cohort and compares, deletes, then calls `World::StopNow`. The
+   process exiting is the expected outcome, not a failure.
+
+   The first run leaves `PlayerbotsLifecycle.CleanupConfirmation` empty on purpose. That refuses with
+   `confirmation_missing`, deletes nothing, and prints the cohort and its digest so it can be reviewed.
+   Copy the digest into `CleanupConfirmation` and run again to actually delete.
+
+   **The process exiting is not proof that anything worked.** `SHUTDOWN_EXIT_CODE` is zero, so the run
+   exits zero on a preview refusal, on a changed target, on a successful deletion, and on a
+   `DeleteCleanupPlan` failure alike. Worse, that function deletes the Playerbots rows and then the
+   accounts one at a time, so a failure partway leaves earlier accounts already gone and skips
+   `OnBotPurge`, which is what removes the auction rows. Before resetting anything, require this exact
+   line:
+
+   ```text
+   Random bot accounts and owned data were deleted.
+   ```
+
+   It is emitted only when the deletion actually succeeded. Then audit the database: no `characters`
+   rows on the generated accounts, no `playerbots_account_type` rows for them, and no `auctionhouse`
+   rows owned by the deleted guids.
+4. Set `PlayerbotsLifecycle.CleanupRequested = 0`, and clear `CleanupConfirmation`.
 5. Restart the worldserver. `RandomPlayerbotFactory::CreateRandomBots` runs unfenced and recreates the
-   population up to `AiPlayerbot.MinRandomBots`, at ten characters per account, faction balanced by
-   `RandomPlayerbotFactionBalance`. Nothing else has to be run.
+   population, faction balanced by `RandomPlayerbotFactionBalance`. Nothing else has to be run.
+
+   The stored cohort is sized from `AiPlayerbot.MaxRandomBots`, NOT `MinRandomBots`.
+   `CalculateTotalAccountCount` divides it by the characters available per account, which is 9 rather
+   than 10 whenever `DisableDeathKnightLogin` is set or the realm is not on Wrath, and is reduced
+   further when the faction ratios are uneven. Every generated account is then filled to ten stored
+   characters regardless. On this realm, `MaxRandomBots = 200` with death knight login disabled and
+   50/50 ratios gives `ceil(200 / 9) = 23` accounts and 230 stored characters. `MinRandomBots` and
+   `MaxRandomBots` bound the number of bots ONLINE at runtime; they do not size the stored pool.
+
+   Ports listening does not prove the population came back. A missing name pool makes
+   `CreateRandomBots` return early, and an individual character creation failure logs and continues, so
+   the realm can serve all three ports with an empty or partial cohort. Require both completion markers
+   and then count the rows:
+
+   ```text
+   >> 23 random bot accounts with 230 characters available
+   Account type assignment complete: 23 RNDbot accounts, 0 AddClass accounts, 0 unassigned
+   ```
+
+### The supervisor will fight you, and it wins
+
+A cleanup run ends by calling `World::StopNow`, and the process exits. `CleanupRequested` is startup
+configuration, so a supervisor that restarts the process runs the cleanup again, and again. That is an
+unattended loop.
+
+On Pierre's macOS host, `com.azeroth.worldserver.plist` sets `KeepAlive` to an unconditional `true`,
+which restarts the job **regardless of exit status**. The zero exit is not what triggers it; a crash
+would be restarted too. Note that a `KeepAlive` dictionary with `SuccessfulExit = true` would still loop,
+because cleanup exits zero; only `SuccessfulExit = false` would leave it down after a clean exit.
+launchd throttles respawns to roughly ten seconds, so this is a slow relentless loop rather than a hot
+one. Take the service out of the picture for the run rather than restarting it:
+
+```bash
+launchctl bootout "gui/$(id -u)/com.azeroth.worldserver"
+# poll until `launchctl print` no longer finds it, then run the binary the same way the service does:
+source /Users/pierre/azeroth-server/etc/secrets.env
+cd /Users/pierre/azeroth-server/bin && ./worldserver -c /Users/pierre/azeroth-server/etc/worldserver.conf
+# it prints the plan and exits on its own; then reset the config and bring the service back:
+launchctl bootstrap "gui/$(id -u)" /Users/pierre/azeroth-server/launchd/com.azeroth.worldserver.plist
+```
+
+A preview run is quick because it refuses before reaching any deletion. It is deletion-safe, not read
+only: `GatherCleanupRequest` calls `CalculateTotalAccountCount` before the confirmation is checked, and
+that function issues `UPDATE playerbots_account_type` statements when `MaxRandomBots` or
+`AddClassAccountPoolSize` is zero. Budget for a normal worldserver startup either way, check that
+`launchctl bootstrap` actually succeeded, and confirm ports 8085, 8888 and 24601 are listening again
+before walking away.
 
 Step 5 is the part that surprises people. There is no recreation script to find because there is no
 recreation script to write. The factory is idempotent: it skips accounts that already exist and accounts
